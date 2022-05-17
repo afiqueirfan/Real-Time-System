@@ -1,3 +1,6 @@
+/#include semphr.h
+
+// Use only core 1 for demo purposes
 #if CONFIG_FREERTOS_UNICORE
   static const BaseType_t app_cpu = 0;
 #else
@@ -12,7 +15,6 @@ enum { TASK_STACK_SIZE = 2048 };  // Bytes in ESP32, words in vanilla FreeRTOS
 static SemaphoreHandle_t bin_sem;   // Wait for parameters to be read
 static SemaphoreHandle_t done_sem;  // Notifies main task when done
 static SemaphoreHandle_t chopstick[NUM_TASKS];
-static SemaphoreHandle_t arbitrator;  // Controls who eats when (e.g. waiter)
 
 //*****************************************************************************
 // Tasks
@@ -22,24 +24,32 @@ void eat(void *parameters) {
 
   int num;
   char buf[50];
+  int idx_1;
+  int idx_2;
 
   // Copy parameter and increment semaphore count
   num = *(int *)parameters;
   xSemaphoreGive(bin_sem);
 
-  // We have to wait our turn to eat
-  xSemaphoreTake(arbitrator, portMAX_DELAY);
+  // Assign priority: pick up lower-numbered chopstick first
+  if (num < (num + 1) % NUM_TASKS) {
+    idx_1 = num;
+    idx_2 = (num + 1) % NUM_TASKS;
+  } else {
+    idx_1 = (num + 1) % NUM_TASKS;
+    idx_2 = num;
+  }
 
-  // Take left chopstick
-  xSemaphoreTake(chopstick[num], portMAX_DELAY);
+  // Take lower-numbered chopstick
+  xSemaphoreTake(chopstick[idx_1], portMAX_DELAY);
   sprintf(buf, "Philosopher %i took chopstick %i", num, num);
   Serial.println(buf);
 
   // Add some delay to force deadlock
   vTaskDelay(1 / portTICK_PERIOD_MS);
 
-  // Take right chopstick
-  xSemaphoreTake(chopstick[(num+1)%NUM_TASKS], portMAX_DELAY);
+  // Take higher-numbered chopstick
+  xSemaphoreTake(chopstick[idx_2], portMAX_DELAY);
   sprintf(buf, "Philosopher %i took chopstick %i", num, (num+1)%NUM_TASKS);
   Serial.println(buf);
 
@@ -48,18 +58,15 @@ void eat(void *parameters) {
   Serial.println(buf);
   vTaskDelay(10 / portTICK_PERIOD_MS);
 
-  // Put down right chopstick
-  xSemaphoreGive(chopstick[(num+1)%NUM_TASKS]);
+  // Put down higher-numbered chopstick
+  xSemaphoreGive(chopstick[idx_2]);
   sprintf(buf, "Philosopher %i returned chopstick %i", num, (num+1)%NUM_TASKS);
   Serial.println(buf);
 
-  // Put down left chopstick
-  xSemaphoreGive(chopstick[num]);
+  // Put down lower-numbered chopstick
+  xSemaphoreGive(chopstick[idx_1]);
   sprintf(buf, "Philosopher %i returned chopstick %i", num, num);
   Serial.println(buf);
-
-  // Tell the arbitrator (waiter) that we're done
-  xSemaphoreGive(arbitrator);
 
   // Notify main task and delete self
   xSemaphoreGive(done_sem);
@@ -79,7 +86,7 @@ void setup() {
   // Wait a moment to start (so we don't miss Serial output)
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   Serial.println();
-  Serial.println("---FreeRTOS Dining Philosophers Arbitrator Solution---");
+  Serial.println("---FreeRTOS Dining Philosophers Hierarchy Solution---");
 
   // Create kernel objects before starting tasks
   bin_sem = xSemaphoreCreateBinary();
@@ -87,8 +94,7 @@ void setup() {
   for (int i = 0; i < NUM_TASKS; i++) {
     chopstick[i] = xSemaphoreCreateMutex();
   }
-  arbitrator = xSemaphoreCreateMutex();
-  
+
   // Have the philosphers start eating
   for (int i = 0; i < NUM_TASKS; i++) {
     sprintf(task_name, "Philosopher %i", i);
